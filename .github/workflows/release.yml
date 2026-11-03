@@ -1,0 +1,38 @@
+name: Release
+
+# Push a tag vX.Y.Z: tests, builds every platform, publishes a GitHub
+# release with the raw binaries + checksums.txt (what install.sh reads).
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./... && go test ./...
+      - name: Build every platform
+        run: make dist VERSION="${GITHUB_REF_NAME}"
+      - name: Check the stamped version
+        run: test "$(./dist/claude-probe-linux-amd64 version)" = "{\"version\":\"${GITHUB_REF_NAME}\"}"
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/claude-probe*
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes $pre
