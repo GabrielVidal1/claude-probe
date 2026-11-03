@@ -41,10 +41,13 @@ func procTable() map[int]unix.KinfoProc {
 func BootNsToEpoch(ns uint64) float64 { return 0 }
 
 func readStat(pid int) *Stat {
-	k, ok := procTable()[pid]
-	if !ok || k.Proc.P_stat == 5 { // SZOMB
+	// one fresh sysctl: the cached table can be 20 ms old, and a process
+	// born since would read as gone
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || kp == nil || kp.Proc.P_pid != int32(pid) || kp.Proc.P_stat == 5 { // SZOMB
 		return nil
 	}
+	k := *kp
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
 		return nil
@@ -84,9 +87,9 @@ func argvOf(pid int) []string {
 	return a
 }
 
-func drmFds(int) []string                        { return nil }
+func drmFds(int) []string                      { return nil }
 func gpuOf(int, []string) (int64, int64, bool) { return 0, 0, false }
-func startKey(s *Stat) float64                   { return s.Start }
+func startKey(s *Stat) float64                 { return s.Start }
 
 func ProcList() map[int]int {
 	out := map[int]int{}

@@ -53,6 +53,7 @@ type Call struct {
 		PeakRss   int64    `json:"peakRss"`
 		ExitCode  *int     `json:"exitCode"`
 		Signal    *int     `json:"signal"`
+		Exact     *bool    `json:"exact"`
 	} `json:"procs"`
 }
 
@@ -160,10 +161,14 @@ func Report(w io.Writer, st *store.Store, session string, asJSON, allParts bool)
 		return err
 	}
 	cs := calls(recs)
-	if asJSON {
+	if asJSON { // the records whole, each with its parts
+		byID := map[string]json.RawMessage{}
+		for _, r := range recs {
+			byID[r.Key] = r.Data
+		}
 		out := make([]map[string]any, 0, len(cs))
 		for _, c := range cs {
-			out = append(out, map[string]any{"call": c, "parts": Parts(c)})
+			out = append(out, map[string]any{"call": byID[c.ToolUseID], "parts": Parts(c)})
 		}
 		return json.NewEncoder(w).Encode(map[string]any{"sessionId": session, "calls": out})
 	}
@@ -173,16 +178,25 @@ func Report(w io.Writer, st *store.Store, session string, asJSON, allParts bool)
 	}
 	var cpu float64
 	var peak int64
-	exact := 0
+	kernel, late := 0, 0
 	for _, c := range cs {
 		cpu += c.Totals.CPU
 		peak = max(peak, c.Totals.PeakRss)
 		if c.Source == "kernel" {
-			exact++
+			kernel++
+		}
+		for _, p := range c.Procs {
+			if p.Exact != nil && !*p.Exact {
+				late++
+			}
 		}
 	}
-	fmt.Fprintf(w, "session %s · %d calls · %s CPU · peak %s · %d/%d exact\n\n",
-		session, len(cs), CPU(cpu), Bytes(peak), exact, len(cs))
+	note := fmt.Sprintf("%d/%d from the kernel", kernel, len(cs))
+	if late > 0 {
+		note += fmt.Sprintf(" (%d processes read after their reap: a lower bound)", late)
+	}
+	fmt.Fprintf(w, "session %s · %d calls · %s CPU · peak %s · %s\n\n",
+		session, len(cs), CPU(cpu), Bytes(peak), note)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
 	fmt.Fprintln(tw, "TIME\tWALL\tCPU\tPEAK\tEXIT\t COMMAND")
 	for _, c := range cs {

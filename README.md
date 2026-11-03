@@ -19,7 +19,7 @@ their first Bash call.
 
 ```text
 $ claude-probe report
-session 5a405517-… · 5 calls · 0.91 s CPU · peak 132 MB · 5/5 exact
+session 5a405517-… · 5 calls · 0.91 s CPU · peak 132 MB · 5/5 from the kernel
 
       TIME    WALL     CPU     PEAK  EXIT COMMAND
   23:17:51  671 ms  0.62 s   132 MB     0 python3 -c 'x=bytearray(120*1024*1024) …
@@ -56,7 +56,8 @@ $ claude-probe top --since 7d
   the exit status for any process of yours, and `proc_pid_rusage` still
   answers for a process that just exited — exact CPU, lifetime peak footprint
   and disk I/O, unless its parent reaps it first (then the last 40-ms sample
-  stands, flagged).
+  stands, flagged `exact: false`; the call's CPU still counts it through the
+  shell's own child time).
 
 ## How it attributes
 

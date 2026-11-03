@@ -61,8 +61,8 @@ func loadLib() error {
 
 // rusage is what proc_pid_rusage (RUSAGE_INFO_V4) gives.
 type rusage struct {
-	cpu, childCPU float64 // seconds
-	peak          int64   // lifetime max physical footprint
+	cpu, childCPU  float64 // seconds
+	peak           int64   // lifetime max physical footprint
 	rbytes, wbytes int64
 }
 
@@ -354,7 +354,10 @@ func (k *Kernel) exited(pid, status int, ru rusage, ok bool) {
 	if w == nil {
 		return
 	}
-	x := &Exit{T: nowF(), Start: w.start, Ppid: ParentOf(pid)}
+	x := &Exit{T: nowF(), Start: w.start}
+	if ok {
+		x.Ppid = ParentOf(pid) // still a zombie: its parent is the reaper
+	}
 	if !ok {
 		ru, x.Approx = w.last, true // reaped first: the last sample stands
 	}

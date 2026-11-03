@@ -208,3 +208,38 @@ func TestApproxExitsAndExecInPlace(t *testing.T) {
 		t.Fatal(perl)
 	}
 }
+
+// A call right after another must not take the finished call's shell.
+func TestBackToBackCallsKeepTheirShells(t *testing.T) {
+	now := nowF()
+	feed := NewFeed()
+	feed.Beat(now-100, 0)
+	const root = 424245
+	pr, st := newProbe(t, feed)
+	run := func(tid, cmd string, pid int, t0 float64) {
+		pr.Handle(Event{E: "pre", Tid: tid, Sid: "S", Command: cmd, T: t0, Chain: []int{root}})
+		pr.calls[tid].root = root
+		feed.Fork(pid, root, t0+0.01, "claude")
+		feed.Exec(pid, root, t0+0.01, "bash", []string{"/bin/bash", "-c", "eval '" + cmd + "' < /dev/null"})
+		feed.ExitEv(pid, &Exit{T: t0 + 0.2, Start: t0 + 0.01, Ppid: root, Code: ip(0), CPU: 0.01})
+		pr.Handle(Event{E: "post", Tid: tid, T: t0 + 0.25})
+		for i := 0; i < 5 && pr.Running() > 0; i++ {
+			pr.Tick()
+		}
+	}
+	run("toolu_a", "python3 -c 1", 500, now)
+	// rtk rewrote the second command beyond a prefix: no exact match, so
+	// first-in-first-out decides — and must skip the first call's shell
+	feed.Fork(501, root, now+0.41, "claude")
+	feed.Exec(501, root, now+0.41, "bash", []string{"/bin/bash", "-c", "eval 'rtk read x' < /dev/null"})
+	feed.ExitEv(501, &Exit{T: now + 0.5, Start: now + 0.41, Ppid: root, Code: ip(0), CPU: 0.01})
+	pr.Handle(Event{E: "pre", Tid: "toolu_b", Sid: "S", Command: "cat x", T: now + 0.3, Chain: []int{root}})
+	pr.calls["toolu_b"].root = root
+	pr.Handle(Event{E: "post", Tid: "toolu_b", T: now + 0.55})
+	for i := 0; i < 5 && pr.Running() > 0; i++ {
+		pr.Tick()
+	}
+	if p := lastCall(t, st, "toolu_b")["procs"].([]any)[0].(map[string]any); p["pid"] != 501.0 {
+		t.Fatal("the second call took", p["pid"])
+	}
+}

@@ -132,7 +132,7 @@ func ToolCommand(argv []string) string {
 }
 
 // unquoteEval reads a single-quoted shell word from its first character on:
-// a quote inside it is written '\'' or '"'"' (what Claude Code uses); a
+// a quote inside it is written '\” or '"'"' (what Claude Code uses); a
 // command line the kernel cut short simply ends early.
 func unquoteEval(s string) string {
 	var b strings.Builder

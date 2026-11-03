@@ -23,9 +23,9 @@ import (
 // `setup-kernel` file capabilities, or root) and a kernel with BTF (≥ 5.8).
 
 const (
-	evFork = 1
-	evExec = 2
-	evExit = 3
+	evFork  = 1
+	evExec  = 2
+	evExit  = 3
 	argvLen = 2048
 )
 

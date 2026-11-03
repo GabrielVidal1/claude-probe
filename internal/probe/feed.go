@@ -45,10 +45,10 @@ type BP struct {
 }
 
 const (
-	matchS  = 0.5   // a /proc start-time vs the kernel's
-	slackS  = 0.05  //
-	keepS   = 1800. // exited processes kept this long for calls to collect
-	staleS  = 75.0  // the kernel layer's heartbeat window
+	matchS = 0.5   // a /proc start-time vs the kernel's
+	slackS = 0.05  //
+	keepS  = 1800. // exited processes kept this long for calls to collect
+	staleS = 75.0  // the kernel layer's heartbeat window
 )
 
 // Feed is the kernel layer's table of every process under an agent. The

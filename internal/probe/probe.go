@@ -39,6 +39,7 @@ var (
 	midS         = 5.0
 	midDt        = 0.1
 	findTimeoutS = 4.0
+	shellSkewS   = 0.25 // a call's shell starts after its pre hook; this is clock slack
 	runningEvery = 10.0
 	maxProcs     = 200
 	maxArgv      = 400
@@ -71,38 +72,38 @@ type Event struct {
 
 // TP is a tracked process of one call.
 type TP struct {
-	Pid       int
-	Start     float64 // fingerprint (ticks on Linux, epoch otherwise)
-	Started   float64 // epoch
-	Ppid      int
-	Parent    *TP
-	Argv      string
-	Label     string
-	Depth     int
-	Via       string
-	Own, Cum  float64
-	own0      float64
-	cum0      float64
-	HWM, RSS  int64
-	RSSMax    int64
-	IO        map[string]int64
-	io0       map[string]int64
-	drm       []string
-	drmAt     float64
-	gpu0      *int64
-	GPU       int64
-	GPUMem    int64
-	Threads   int
-	Dead      bool
-	End       float64
-	Unseen    float64
-	Final     *float64
-	Exact     bool // its exit came from the kernel layer, with exact numbers
-	exited    bool // the kernel layer reported its exit (exact or not)
-	raw       string
-	Code      *int
-	Signal    *int
-	Reaper    int
+	Pid      int
+	Start    float64 // fingerprint (ticks on Linux, epoch otherwise)
+	Started  float64 // epoch
+	Ppid     int
+	Parent   *TP
+	Argv     string
+	Label    string
+	Depth    int
+	Via      string
+	Own, Cum float64
+	own0     float64
+	cum0     float64
+	HWM, RSS int64
+	RSSMax   int64
+	IO       map[string]int64
+	io0      map[string]int64
+	drm      []string
+	drmAt    float64
+	gpu0     *int64
+	GPU      int64
+	GPUMem   int64
+	Threads  int
+	Dead     bool
+	End      float64
+	Unseen   float64
+	Final    *float64
+	Exact    bool // its exit came from the kernel layer, with exact numbers
+	exited   bool // the kernel layer reported its exit (exact or not)
+	raw      string
+	Code     *int
+	Signal   *int
+	Reaper   int
 }
 
 func newTP(pid int, start, started float64, ppid int, parent *TP, argv []string, comm, via string, depth int) *TP {
@@ -347,8 +348,10 @@ func (c *Call) totals() map[string]any {
 		var orphans float64
 		for _, p := range c.procs {
 			cpu += p.Own
-			if p != c.shell && p.exited && !c.member(p.Reaper) {
-				orphans += p.Own // reaped by init/launchd: not in the shell's child time
+			// reaped by init/launchd: not in the shell's child time (an
+			// unknown reaper — macOS, read after the reap — is not one)
+			if p != c.shell && p.exited && (p.Reaper == 1 || (p.Reaper > 1 && !c.member(p.Reaper))) {
+				orphans += p.Own
 			}
 			own := map[string]int64{}
 			for k, v := range p.IO {
@@ -431,6 +434,9 @@ func (c *Call) record() map[string]any {
 	if c.shellEnd > 0 {
 		out["shellEndedAt"] = r3(c.shellEnd)
 	}
+	if c.ev.Bg {
+		out["durationMs"] = nil // its post hook fired at launch: not the call's length
+	}
 	if c.shell != nil && c.shell.Code != nil {
 		out["exitCode"] = *c.shell.Code
 	}
@@ -476,10 +482,12 @@ type Probe struct {
 	calls     map[string]*Call
 	lastPrune float64
 	LastEvent float64
+	claimed   map[string]float64 // shells already given to a call (pid@start → when)
 }
 
 func New(st *store.Store, feed *Feed) *Probe {
-	return &Probe{Store: st, Feed: feed, calls: map[string]*Call{}, LastEvent: nowF()}
+	return &Probe{Store: st, Feed: feed, calls: map[string]*Call{}, LastEvent: nowF(),
+		claimed: map[string]float64{}}
 }
 
 func (pr *Probe) kernel(now float64) bool { return pr.Feed.Alive(now) }
@@ -651,9 +659,20 @@ type cand struct {
 	st      *Stat
 }
 
+func shellKey(pid int, started float64) string {
+	return strconv.Itoa(pid) + "@" + strconv.FormatFloat(math.Round(started*10)/10, 'f', 1, 64)
+}
+
+// taken: the shell belongs to a call already — a live one, or one that
+// finished a moment ago (its shell is still in the kernel layer's tree).
 func (pr *Probe) taken(pid int, started float64) bool {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
+	for _, d := range []float64{0, -0.1, 0.1} {
+		if _, ok := pr.claimed[shellKey(pid, started+d)]; ok {
+			return true
+		}
+	}
 	for _, x := range pr.calls {
 		if x.shell != nil && x.shell.Pid == pid && math.Abs(x.shell.Started-started) <= matchS {
 			return true
@@ -665,8 +684,9 @@ func (pr *Probe) taken(pid int, started float64) bool {
 func (pr *Probe) candidates(c *Call, now float64) []cand {
 	var out []cand
 	if pr.kernel(now) {
-		for _, bp := range pr.Feed.Children(c.root, c.tPre-1, 0) {
-			if pr.taken(bp.Pid, bp.Start) {
+		// the shell starts after the pre hook returned: never before it
+		for _, bp := range pr.Feed.Children(c.root, c.tPre-shellSkewS, 0) {
+			if pr.taken(bp.Pid, bp.Start) || (bp.Exit != nil && bp.Exit.T < c.tPre) {
 				continue
 			}
 			cmd := ToolCommand(bp.Argv)
@@ -686,7 +706,7 @@ func (pr *Probe) candidates(c *Call, now float64) []cand {
 	}
 	for _, pid := range children(c.root) {
 		st := readStat(pid)
-		if st == nil || st.Started < c.tPre-1 || pr.taken(pid, st.Started) {
+		if st == nil || st.Started < c.tPre-shellSkewS || pr.taken(pid, st.Started) {
 			continue
 		}
 		cmd := ToolCommand(argvOf(pid))
@@ -774,6 +794,14 @@ func (pr *Probe) findShell(c *Call, now float64) {
 	c.procs = append(c.procs, tp)
 	c.shell = tp
 	c.status = "running"
+	pr.mu.Lock()
+	pr.claimed[shellKey(tp.Pid, tp.Started)] = now
+	for k, at := range pr.claimed {
+		if now-at > 600 {
+			delete(pr.claimed, k)
+		}
+	}
+	pr.mu.Unlock()
 }
 
 func (pr *Probe) look(c *Call, now float64) {
@@ -807,6 +835,9 @@ func (pr *Probe) look(c *Call, now float64) {
 	var alive []pair
 	for _, p := range c.live() {
 		st := readStat(p.Pid)
+		if kernel && st == nil {
+			continue // only the kernel's exit ends a process it follows
+		}
 		if st == nil || math.Abs(st.Started-p.Started) > matchS {
 			p.Dead = true
 			if p.End == 0 {
@@ -824,15 +855,22 @@ func (pr *Probe) look(c *Call, now float64) {
 			reaped(c, a.p, prev)
 		}
 	}
+	n0 := len(c.procs)
 	if kernel {
 		pr.growKernel(c)
 	} else {
 		pr.growProc(c, now)
 	}
 	live := c.live()
+	// the tree's memory right now: only what was read alive in this look
 	var tree int64
-	for _, p := range live {
-		tree += p.RSS
+	for _, a := range alive {
+		tree += a.st.RSS
+	}
+	for _, p := range c.procs[n0:] {
+		if !p.Dead {
+			tree += p.RSS
+		}
 	}
 	c.peakTree = max(c.peakTree, tree)
 	if !kernel {
@@ -852,8 +890,8 @@ func (pr *Probe) look(c *Call, now float64) {
 			}
 		}
 	}
-	if c.shell.Dead && c.shellEnd == 0 {
-		c.shellEnd = c.shell.End
+	if c.shell.Dead {
+		c.shellEnd = c.shell.End // the kernel's exit time replaces a sampled guess
 	}
 	pending := false
 	if kernel {
