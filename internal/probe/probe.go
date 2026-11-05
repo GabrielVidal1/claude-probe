@@ -282,6 +282,27 @@ func (p *TP) view() map[string]any {
 	return out
 }
 
+// extraProc is a process of a call past maxProcs: not followed, but counted
+// once, its children found, and its file events kept.
+type extraProc struct {
+	Pid     int
+	Started float64
+	End     float64
+}
+
+func (c *Call) addExtra(pid int, started float64) bool {
+	k := shellKey(pid, started)
+	if c.extra == nil {
+		c.extra = map[string]extraProc{}
+	}
+	if _, ok := c.extra[k]; ok {
+		return false
+	}
+	c.extra[k] = extraProc{Pid: pid, Started: started}
+	c.overflow = len(c.extra)
+	return true
+}
+
 // Call is one tool call the probe follows.
 type Call struct {
 	ev         Event
@@ -295,6 +316,7 @@ type Call struct {
 	goneGPU    int64
 	peakTree   int64
 	overflow   int
+	extra      map[string]extraProc // the processes past maxProcs (pid@start): counted, their files kept
 	samples    int
 	tPost      float64
 	durationMs *int64
@@ -994,12 +1016,30 @@ func (pr *Probe) growKernel(c *Call) {
 				continue
 			}
 			if len(c.procs) >= maxProcs {
-				c.overflow++
+				c.addExtra(k.Pid, k.Start)
 				continue
 			}
 			tp := tpFromKernel(k, p, p.Depth+1)
 			c.procs = append(c.procs, tp)
 			queue = append(queue, tp)
+		}
+	}
+	// the overflow's own children: overflow too
+	var eq []extraProc
+	for _, x := range c.extra {
+		eq = append(eq, x)
+	}
+	for len(eq) > 0 {
+		x := eq[len(eq)-1]
+		eq = eq[:len(eq)-1]
+		end := 0.0
+		if bp := pr.Feed.Find(x.Pid, x.Started); bp != nil && bp.Exit != nil {
+			end = bp.Exit.T
+		}
+		for _, k := range pr.Feed.Children(x.Pid, x.Started, end) {
+			if c.find(k.Pid, k.Start) == nil && c.addExtra(k.Pid, k.Start) {
+				eq = append(eq, extraProc{Pid: k.Pid, Started: k.Start})
+			}
 		}
 	}
 }
@@ -1016,7 +1056,7 @@ func (pr *Probe) growProc(c *Call, now float64) {
 					continue
 				}
 				if len(c.procs) >= maxProcs {
-					c.overflow++
+					c.addExtra(k, st.Started)
 					continue
 				}
 				tp := tpFromProc(k, st, p, "tree", p.Depth+1, st.Started >= c.tPre-1)

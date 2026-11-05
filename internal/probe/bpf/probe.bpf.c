@@ -44,7 +44,7 @@ struct ev_exec {
 // A file one of them opened for writing, until its last reference goes.
 struct wopen {
 	__u32 tgid, created;
-	__u64 ino, dev, blocks0, size0;
+	__u64 ino, dev, blocks0, size0;   // blocks0: allocated bytes at open
 	char path[PATH_LEN];
 };
 
@@ -53,7 +53,7 @@ struct ev_file {
 	__u32 type, pid;        // pid: the process that opened it (writes), or unlinked it
 	__u32 op, created;
 	__u64 ts, ino, dev;
-	__s64 dblocks;          // allocated bytes (i_blocks * 512): after - before
+	__s64 dblocks;          // allocated bytes (alloc_bytes): after - before
 	__s64 dsize;            // logical bytes (i_size): after - before
 	__u64 size;             // its size now (0 once unlinked)
 	char path[PATH_LEN];    // F_WRITE: the absolute path; else up to 4 names, leaf first
@@ -288,6 +288,18 @@ int BPF_PROG(on_exit, struct task_struct *p)
 // Only descendants (1): the agent itself (2) writes its transcript all the
 // time, and its Write/Edit tools are measured by the hook.
 
+// A file's allocated bytes. i_blocks leaves out what delayed allocation
+// (ext4, xfs, btrfs) hasn't placed yet — a file written a moment ago reads
+// as empty — so its size rounded up to a 4 KiB block stands in when larger
+// (a sparse file is the one case that over-counts).
+static __always_inline __s64 alloc_bytes(struct inode *ino)
+{
+	__s64 b = (__s64)BPF_CORE_READ(ino, i_blocks) * 512;
+	__s64 sz = BPF_CORE_READ(ino, i_size);
+	__s64 r = (sz + 4095) & ~4095LL;
+	return r > b ? r : b;
+}
+
 static __always_inline int traced_child(void)
 {
 	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
@@ -316,7 +328,7 @@ int BPF_PROG(on_file_open, struct file *file)
 	w->created = (mode & FMODE_CREATED) ? 1 : 0;
 	w->ino = BPF_CORE_READ(ino, i_ino);
 	w->dev = BPF_CORE_READ(ino, i_sb, s_dev);
-	w->blocks0 = BPF_CORE_READ(ino, i_blocks);   // before an O_TRUNC: it comes later
+	w->blocks0 = alloc_bytes(ino);   // before an O_TRUNC: it comes later (bytes, not blocks)
 	w->size0 = BPF_CORE_READ(ino, i_size);
 	w->path[0] = 0;
 	bpf_d_path(&file->f_path, w->path, PATH_LEN);
@@ -332,9 +344,9 @@ static __always_inline int file_done(struct file *file)
 	if (!w)
 		return 0;
 	struct inode *ino = BPF_CORE_READ(file, f_inode);
-	__s64 blocks = BPF_CORE_READ(ino, i_blocks);
+	__s64 alloc = alloc_bytes(ino);
 	__s64 size = BPF_CORE_READ(ino, i_size);
-	__s64 db = (blocks - (__s64)w->blocks0) * 512;
+	__s64 db = alloc - (__s64)w->blocks0;
 	__s64 ds = size - (__s64)w->size0;
 	if (db == 0 && ds == 0 && !w->created) {
 		bpf_map_delete_elem(&wfiles, &key);
@@ -414,7 +426,7 @@ static __always_inline int freed(struct dentry *d, __u32 op)
 	e->ts = bpf_ktime_get_boot_ns();
 	e->ino = BPF_CORE_READ(ino, i_ino);
 	e->dev = BPF_CORE_READ(ino, i_sb, s_dev);
-	e->dblocks = -(__s64)BPF_CORE_READ(ino, i_blocks) * 512;
+	e->dblocks = -alloc_bytes(ino);
 	e->dsize = -(__s64)BPF_CORE_READ(ino, i_size);
 	names(e->path, d);
 	bpf_ringbuf_submit(e, 0);

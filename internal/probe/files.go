@@ -204,5 +204,11 @@ func (pr *Probe) files(c *Call) map[string]any {
 		seen[p.Pid] = true
 		evs = append(evs, pr.Feed.FilesOf(p.Pid, p.Started)...)
 	}
+	for _, x := range c.extra {
+		if !seen[x.Pid] {
+			seen[x.Pid] = true
+			evs = append(evs, pr.Feed.FilesOf(x.Pid, x.Started)...)
+		}
+	}
 	return fileAgg(evs)
 }
