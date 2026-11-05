@@ -69,7 +69,20 @@ type Event struct {
 	BgTask      string  `json:"bgTask,omitempty"`
 	Interrupted bool    `json:"interrupted,omitempty"`
 	BgTasks     *int    `json:"bgTasks,omitempty"`
+	// a file tool (Write, Edit…): its file, as the hook found it before / after
+	FilePath string `json:"filePath,omitempty"`
+	File     *FStat `json:"file,omitempty"`
 }
+
+// FStat is one file as a stat saw it (Exists false: not there).
+type FStat struct {
+	Exists bool  `json:"exists"`
+	Bytes  int64 `json:"bytes"` // allocated (blocks × 512)
+	Size   int64 `json:"size"`
+}
+
+// FileTools are the tools whose effect is one file (measured by the hook).
+var FileTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true}
 
 // TP is a tracked process of one call.
 type TP struct {
@@ -484,6 +497,7 @@ type Probe struct {
 	lastPrune float64
 	LastEvent float64
 	claimed   map[string]float64 // shells already given to a call (pid@start → when)
+	fileTools map[string]Event   // a file tool's pre event, until its post
 
 	OnEvent func(Event)          // every hook event (the storage scanner's activity feed)
 	OnDone  func(map[string]any) // a call's final record
@@ -491,7 +505,7 @@ type Probe struct {
 
 func New(st *store.Store, feed *Feed) *Probe {
 	return &Probe{Store: st, Feed: feed, calls: map[string]*Call{}, LastEvent: nowF(),
-		claimed: map[string]float64{}}
+		claimed: map[string]float64{}, fileTools: map[string]Event{}}
 }
 
 func (pr *Probe) kernel(now float64) bool { return pr.Feed.Alive(now) }
@@ -507,6 +521,20 @@ func (pr *Probe) Handle(ev Event) {
 	now := nowF()
 	pr.mu.Lock()
 	pr.LastEvent = now
+	if (ev.E == "pre" || ev.E == "post") && FileTools[ev.Tool] {
+		if ev.E == "pre" {
+			pr.fileTools[ev.Tid] = ev
+			pr.mu.Unlock()
+			return
+		}
+		pre, ok := pr.fileTools[ev.Tid]
+		delete(pr.fileTools, ev.Tid)
+		pr.mu.Unlock()
+		if ok {
+			pr.fileTool(pre, ev, now)
+		}
+		return
+	}
 	switch ev.E {
 	case "pre":
 		if ev.Tid != "" && pr.calls[ev.Tid] == nil {
@@ -917,6 +945,9 @@ func (pr *Probe) look(c *Call, now float64) {
 		pr.emit(c, now)
 	}
 	if len(live) == 0 && !pending {
+		if kernel && pr.Feed.FilesOn && now-c.lastExit() < settleS {
+			return // its files are being released: wait for their events
+		}
 		if c.tPost > 0 || now-orF(c.shellEnd, now) > 3 {
 			if c.status != "error" && c.status != "capped" {
 				c.status = "done"
@@ -1031,6 +1062,9 @@ func reaped(c *Call, p *TP, prev float64) {
 func (pr *Probe) emit(c *Call, now float64) map[string]any {
 	c.emittedAt = now
 	rec := c.record()
+	if f := pr.files(c); f != nil {
+		rec["files"] = f
+	}
 	_ = pr.Store.Put("call", c.ev.Sid, c.ev.Tid, rec)
 	return rec
 }
@@ -1047,4 +1081,39 @@ func (pr *Probe) drop(c *Call) {
 	pr.mu.Lock()
 	delete(pr.calls, c.ev.Tid)
 	pr.mu.Unlock()
+}
+
+// fileTool records what a Write / Edit did to its file: a call record with
+// no process, its "files" from the hook's stat before and after.
+func (pr *Probe) fileTool(pre, post Event, now float64) {
+	before, after := pre.File, post.File
+	if before == nil || after == nil {
+		return
+	}
+	delta := after.Bytes - before.Bytes
+	files := map[string]any{"v": 1, "written": max(delta, 0), "freed": max(-delta, 0), "net": delta,
+		"logical": after.Size - before.Size, "files": 1, "events": 1, "exact": true, "source": "hook",
+		"created": 0, "deleted": 0}
+	top := map[string]any{"path": pre.FilePath, "delta": delta, "size": after.Size, "op": "write"}
+	if !before.Exists && after.Exists {
+		files["created"] = 1
+		top["created"] = true
+	}
+	if delta != 0 || !before.Exists {
+		files["top"] = []map[string]any{top}
+	}
+	rec := map[string]any{
+		"v": 1, "tool": pre.Tool, "toolUseId": pre.Tid, "sessionId": pre.Sid,
+		"agentId": nilIfEmpty(pre.AgentID), "agentType": nilIfEmpty(pre.AgentType),
+		"promptId": nilIfEmpty(pre.PromptID), "command": "", "cwd": nilIfEmpty(pre.Cwd),
+		"background": false, "status": "done", "seen": true, "source": "hook",
+		"preAt": r3(orF(pre.T, now)), "startedAt": r3(orF(pre.T, now)), "endedAt": r3(orF(post.T, now)),
+		"durationMs": post.DurationMs, "totals": map[string]any{"cpu": 0, "peakRss": 0, "procs": 0,
+			"io": map[string]int64{}}, "procs": []map[string]any{}, "files": files,
+		"filePath": pre.FilePath,
+	}
+	_ = pr.Store.Put("call", pre.Sid, pre.Tid, rec)
+	if pr.OnDone != nil {
+		pr.OnDone(rec)
+	}
 }

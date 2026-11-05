@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -26,8 +27,44 @@ const (
 	evFork  = 1
 	evExec  = 2
 	evExit  = 3
+	evFile  = 4
 	argvLen = 2048
+	pathLen = 256
+	nameLen = 64
 )
+
+type evFileRec struct {
+	Type, Pid      uint32
+	Op, Created    uint32
+	Ts, Ino, Dev   uint64
+	Dblocks, Dsize int64
+	Size           uint64
+	Path           [pathLen]byte
+}
+
+var fileOps = map[uint32]string{1: "write", 2: "unlink", 3: "replace"}
+
+// unlinkPath joins the names an unlink reported (leaf first): "…/dir/name",
+// or "/a/b/name" when the walk reached the root.
+func unlinkPath(raw []byte) string {
+	var parts []string
+	rooted := false
+	for i := 0; i < 4; i++ {
+		n := cstr(raw[i*nameLen : (i+1)*nameLen])
+		if n == "" {
+			break
+		}
+		if n == "/" {
+			rooted = true
+			break
+		}
+		parts = append([]string{n}, parts...)
+	}
+	if rooted {
+		return "/" + strings.Join(parts, "/")
+	}
+	return "…/" + strings.Join(parts, "/")
+}
 
 type evSmall struct {
 	Type, Pid, Ppid uint32
@@ -84,6 +121,21 @@ func StartKernel(feed *Feed, uid uint32) (*Kernel, error) {
 			}
 		}
 	}
+	// The file hooks: the last reference's hook is >= 6.8 — before that, the
+	// last close stands in (its program then loads against filp_close too,
+	// and stays detached).
+	release := "security_file_release"
+	if !kernelHas(release) {
+		release = ""
+		if p := spec.Programs["on_file_release"]; p != nil {
+			p.AttachTo = "filp_close"
+		}
+	}
+	for _, name := range []string{"on_file_open", "on_unlink", "on_rename", "on_filp_close"} {
+		if p := spec.Programs[name]; p != nil && !kernelHas(p.AttachTo) {
+			return nil, fmt.Errorf("kernel lacks %s", p.AttachTo)
+		}
+	}
 	if v, ok := spec.Variables["target_uid"]; ok {
 		if err := v.Set(uid); err != nil {
 			return nil, err
@@ -111,6 +163,32 @@ func StartKernel(feed *Feed, uid uint32) (*Kernel, error) {
 		k.links = append(k.links, l)
 	} else {
 		k.Notes = append(k.Notes, "no acct_collect fentry ("+err.Error()+"): peak RSS includes pre-exec memory")
+	}
+	// what the agents' processes do to files: optional — a failure leaves
+	// the calls' cost exact and says files aren't measured
+	closeProg := k.objs.OnFileRelease
+	if release == "" {
+		closeProg = k.objs.OnFilpClose
+		k.Notes = append(k.Notes, "no security_file_release (kernel < 6.8): a file written through a mapping after its fd closed is missed")
+	}
+	var fl []link.Link
+	filesOK := true
+	for _, p := range []*ebpf.Program{k.objs.OnFileOpen, closeProg, k.objs.OnUnlink, k.objs.OnRename} {
+		l, err := link.AttachTracing(link.TracingOptions{Program: p})
+		if err != nil {
+			k.Notes = append(k.Notes, "file tracking off ("+err.Error()+")")
+			filesOK = false
+			break
+		}
+		fl = append(fl, l)
+	}
+	if filesOK {
+		k.links = append(k.links, fl...)
+		feed.FilesOn = true
+	} else {
+		for _, l := range fl {
+			l.Close()
+		}
 	}
 	if k.rd, err = ringbuf.NewReader(k.objs.Events); err != nil {
 		k.Close()
@@ -228,6 +306,18 @@ func (k *Kernel) read() {
 				}
 				k.feed.Exec(int(e.Pid), int(e.Ppid), BootNsToEpoch(e.Start), cstr(e.Comm[:]), argv)
 			}
+		case evFile:
+			var e evFileRec
+			if binary.Read(bytes.NewReader(raw), binary.LittleEndian, &e) == nil {
+				fe := FileEv{T: BootNsToEpoch(e.Ts), Op: fileOps[e.Op], Created: e.Created != 0,
+					Delta: e.Dblocks, DSize: e.Dsize, Size: int64(e.Size), Ino: e.Ino, Dev: e.Dev}
+				if e.Op == 1 {
+					fe.Path = cstr(e.Path[:])
+				} else {
+					fe.Path = unlinkPath(e.Path[:])
+				}
+				k.feed.File(int(e.Pid), fe)
+			}
 		case evExit:
 			var e evSmall
 			if binary.Read(bytes.NewReader(raw), binary.LittleEndian, &e) == nil {
@@ -247,6 +337,28 @@ func (k *Kernel) read() {
 			}
 		}
 	}
+}
+
+var (
+	ksyms     map[string]bool
+	ksymsOnce sync.Once
+)
+
+// kernelHas says whether a kernel function can be attached to (its BTF).
+func kernelHas(fn string) bool {
+	ksymsOnce.Do(func() {
+		ksyms = map[string]bool{}
+		if spec, err := btf.LoadKernelSpec(); err == nil {
+			for _, n := range []string{"security_file_open", "security_file_release", "filp_close",
+				"security_inode_unlink", "security_inode_rename", "acct_collect"} {
+				var f *btf.Func
+				if spec.TypeByName(n, &f) == nil {
+					ksyms[n] = true
+				}
+			}
+		}
+	})
+	return ksyms[fn]
 }
 
 // unameVersion is KERNEL_VERSION(a, b, c) of the running kernel.

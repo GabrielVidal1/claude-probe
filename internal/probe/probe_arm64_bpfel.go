@@ -8,9 +8,21 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type probeWopen struct {
+	_       structs.HostLayout
+	Tgid    uint32
+	Created uint32
+	Ino     uint64
+	Dev     uint64
+	Blocks0 uint64
+	Size0   uint64
+	Path    [256]int8
+}
 
 // Names of all BPF objects in the ELF.
 //
@@ -20,10 +32,17 @@ const (
 	probeMapLost           = "lost"
 	probeMapPeak           = "peak"
 	probeMapTracked        = "tracked"
+	probeMapWfiles         = "wfiles"
+	probeMapWscratch       = "wscratch"
 	probeProgOnAcctCollect = "on_acct_collect"
 	probeProgOnExec        = "on_exec"
 	probeProgOnExit        = "on_exit"
+	probeProgOnFileOpen    = "on_file_open"
+	probeProgOnFileRelease = "on_file_release"
+	probeProgOnFilpClose   = "on_filp_close"
 	probeProgOnNewtask     = "on_newtask"
+	probeProgOnRename      = "on_rename"
+	probeProgOnUnlink      = "on_unlink"
 	probeVarRootComm       = "root_comm"
 	probeVarTargetUid      = "target_uid"
 )
@@ -73,17 +92,24 @@ type probeProgramSpecs struct {
 	OnAcctCollect *ebpf.ProgramSpec `ebpf:"on_acct_collect"`
 	OnExec        *ebpf.ProgramSpec `ebpf:"on_exec"`
 	OnExit        *ebpf.ProgramSpec `ebpf:"on_exit"`
+	OnFileOpen    *ebpf.ProgramSpec `ebpf:"on_file_open"`
+	OnFileRelease *ebpf.ProgramSpec `ebpf:"on_file_release"`
+	OnFilpClose   *ebpf.ProgramSpec `ebpf:"on_filp_close"`
 	OnNewtask     *ebpf.ProgramSpec `ebpf:"on_newtask"`
+	OnRename      *ebpf.ProgramSpec `ebpf:"on_rename"`
+	OnUnlink      *ebpf.ProgramSpec `ebpf:"on_unlink"`
 }
 
 // probeMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type probeMapSpecs struct {
-	Events  *ebpf.MapSpec `ebpf:"events"`
-	Lost    *ebpf.MapSpec `ebpf:"lost"`
-	Peak    *ebpf.MapSpec `ebpf:"peak"`
-	Tracked *ebpf.MapSpec `ebpf:"tracked"`
+	Events   *ebpf.MapSpec `ebpf:"events"`
+	Lost     *ebpf.MapSpec `ebpf:"lost"`
+	Peak     *ebpf.MapSpec `ebpf:"peak"`
+	Tracked  *ebpf.MapSpec `ebpf:"tracked"`
+	Wfiles   *ebpf.MapSpec `ebpf:"wfiles"`
+	Wscratch *ebpf.MapSpec `ebpf:"wscratch"`
 }
 
 // probeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -114,10 +140,12 @@ func (o *probeObjects) Close() error {
 //
 // It can be passed to loadProbeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type probeMaps struct {
-	Events  *ebpf.Map `ebpf:"events"`
-	Lost    *ebpf.Map `ebpf:"lost"`
-	Peak    *ebpf.Map `ebpf:"peak"`
-	Tracked *ebpf.Map `ebpf:"tracked"`
+	Events   *ebpf.Map `ebpf:"events"`
+	Lost     *ebpf.Map `ebpf:"lost"`
+	Peak     *ebpf.Map `ebpf:"peak"`
+	Tracked  *ebpf.Map `ebpf:"tracked"`
+	Wfiles   *ebpf.Map `ebpf:"wfiles"`
+	Wscratch *ebpf.Map `ebpf:"wscratch"`
 }
 
 func (m *probeMaps) Close() error {
@@ -126,6 +154,8 @@ func (m *probeMaps) Close() error {
 		m.Lost,
 		m.Peak,
 		m.Tracked,
+		m.Wfiles,
+		m.Wscratch,
 	)
 }
 
@@ -144,7 +174,12 @@ type probePrograms struct {
 	OnAcctCollect *ebpf.Program `ebpf:"on_acct_collect"`
 	OnExec        *ebpf.Program `ebpf:"on_exec"`
 	OnExit        *ebpf.Program `ebpf:"on_exit"`
+	OnFileOpen    *ebpf.Program `ebpf:"on_file_open"`
+	OnFileRelease *ebpf.Program `ebpf:"on_file_release"`
+	OnFilpClose   *ebpf.Program `ebpf:"on_filp_close"`
 	OnNewtask     *ebpf.Program `ebpf:"on_newtask"`
+	OnRename      *ebpf.Program `ebpf:"on_rename"`
+	OnUnlink      *ebpf.Program `ebpf:"on_unlink"`
 }
 
 func (p *probePrograms) Close() error {
@@ -152,7 +187,12 @@ func (p *probePrograms) Close() error {
 		p.OnAcctCollect,
 		p.OnExec,
 		p.OnExit,
+		p.OnFileOpen,
+		p.OnFileRelease,
+		p.OnFilpClose,
 		p.OnNewtask,
+		p.OnRename,
+		p.OnUnlink,
 	)
 }
 

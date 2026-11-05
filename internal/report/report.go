@@ -41,6 +41,14 @@ type Call struct {
 		IO      map[string]int64 `json:"io"`
 		GpuS    float64          `json:"gpuS"`
 	} `json:"totals"`
+	Tool     string `json:"tool"`
+	FilePath string `json:"filePath"`
+	Files    *struct {
+		Net     int64 `json:"net"`
+		Written int64 `json:"written"`
+		Freed   int64 `json:"freed"`
+		Files   int   `json:"files"`
+	} `json:"files"`
 	Procs []struct {
 		Pid       int      `json:"pid"`
 		Ppid      int      `json:"ppid"`
@@ -121,6 +129,18 @@ func Bytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", v, u[i])
 }
 
+// Disk is what a call left on disk, net: "+20 MB", "-8.0 MB" ("" when nothing
+// was measured or it nets to under a block).
+func Disk(c Call) string {
+	if c.Files == nil || (c.Files.Net > -4096 && c.Files.Net < 4096 && c.Files.Written < 1<<20) {
+		return ""
+	}
+	if c.Files.Net < 0 {
+		return "-" + Bytes(-c.Files.Net)
+	}
+	return "+" + Bytes(c.Files.Net)
+}
+
 func dur(s float64) string {
 	switch {
 	case s <= 0:
@@ -198,18 +218,22 @@ func Report(w io.Writer, st *store.Store, session string, asJSON, allParts bool)
 	fmt.Fprintf(w, "session %s · %d calls · %s CPU · peak %s · %s\n\n",
 		session, len(cs), CPU(cpu), Bytes(peak), note)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "TIME\tWALL\tCPU\tPEAK\tEXIT\t COMMAND")
+	fmt.Fprintln(tw, "TIME\tWALL\tCPU\tPEAK\tDISK\tEXIT\t COMMAND")
 	for _, c := range cs {
 		mark := ""
-		if c.Source != "kernel" {
+		if c.Source != "kernel" && c.Source != "hook" {
 			mark = "~"
 		}
 		if c.AgentType != nil {
 			mark += "[" + *c.AgentType + "] "
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t %s%s\n", time.Unix(int64(c.StartedAt), 0).Format("15:04:05"),
-			dur(wall(c)), CPU(c.Totals.CPU), Bytes(c.Totals.PeakRss), exit(c.ExitCode, c.Signal),
-			mark, oneLine(c.Command, 70))
+		cmd := c.Command
+		if c.Tool != "" && c.Tool != "Bash" {
+			cmd = c.Tool + " " + c.FilePath
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t %s%s\n", time.Unix(int64(c.StartedAt), 0).Format("15:04:05"),
+			dur(wall(c)), CPU(c.Totals.CPU), Bytes(c.Totals.PeakRss), Disk(c), exit(c.ExitCode, c.Signal),
+			mark, oneLine(cmd, 70))
 		if allParts || c.Totals.CPU >= 1 {
 			for _, p := range Parts(c) {
 				if p.Builtin || len(p.Pids) == 0 {
@@ -223,7 +247,7 @@ func Report(w io.Writer, st *store.Store, session string, asJSON, allParts bool)
 				if p.StartedAt != nil && p.EndedAt != nil {
 					pw = *p.EndedAt - *p.StartedAt
 				}
-				fmt.Fprintf(tw, "\t%s\t%s\t%s\t%s\t   └ %s\n", dur(pw), CPU(p.CPU), Bytes(p.PeakRss), code,
+				fmt.Fprintf(tw, "\t%s\t%s\t%s\t\t%s\t   └ %s\n", dur(pw), CPU(p.CPU), Bytes(p.PeakRss), code,
 					oneLine(shellsplit.Label(p), 60))
 			}
 		}

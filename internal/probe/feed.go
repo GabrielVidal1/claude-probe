@@ -35,6 +35,21 @@ type Exit struct {
 	Approx      bool // macOS: reaped before it could be read — the last sample
 }
 
+// FileEv is what one process did to one file, as the kernel saw it: a write
+// (the file's allocated size when its last reference went minus when it
+// was opened), or an unlink / a rename over it (what that freed).
+type FileEv struct {
+	T       float64
+	Op      string // write | unlink | replace
+	Path    string // absolute for a write; "…/dir/name" for the others
+	Created bool
+	Delta   int64 // allocated bytes, after - before
+	DSize   int64 // logical bytes, after - before
+	Size    int64 // its size after
+	Ino     uint64
+	Dev     uint64
+}
+
 // BP is a process as the kernel layer saw it: fork parent, latest exec, exit.
 type BP struct {
 	Pid, Ppid int
@@ -65,10 +80,47 @@ type Feed struct {
 	// node-run claude); the probe calls it with each call's root.
 	OnRoot func(pid int)
 	roots  map[int]bool
+	// what each process did to files (pid → events), and whether the layer
+	// reports it at all (an older kernel may lack the hooks)
+	files   map[int][]FileEv
+	FilesOn bool
 }
 
 func NewFeed() *Feed {
-	return &Feed{byPid: map[int][]*BP{}, kids: map[int][]*BP{}, roots: map[int]bool{}}
+	return &Feed{byPid: map[int][]*BP{}, kids: map[int][]*BP{}, roots: map[int]bool{},
+		files: map[int][]FileEv{}}
+}
+
+// File records one file event of pid.
+func (f *Feed) File(pid int, e FileEv) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[pid] = append(f.files[pid], e)
+}
+
+// FilesOf is what pid's incarnation started at `started` did to files: its
+// events from then until the pid's next incarnation (a file it opened can
+// be released long after it exited, by a child that inherited it).
+func (f *Feed) FilesOf(pid int, started float64) []FileEv {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	evs := f.files[pid]
+	if len(evs) == 0 {
+		return nil
+	}
+	until := math.Inf(1)
+	for _, b := range f.byPid[pid] {
+		if b.Start > started+matchS && b.Start < until {
+			until = b.Start
+		}
+	}
+	var out []FileEv
+	for _, e := range evs {
+		if e.T >= started-slackS && e.T < until {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // EnsureRoot tells the layer, once per process, to follow this agent.
@@ -194,6 +246,19 @@ func (f *Feed) Find(pid int, started float64) *BP {
 }
 
 func (f *Feed) prune(now float64) {
+	for pid, evs := range f.files {
+		keep := evs[:0]
+		for _, e := range evs {
+			if e.T >= now-keepS {
+				keep = append(keep, e)
+			}
+		}
+		if len(keep) == 0 {
+			delete(f.files, pid)
+		} else {
+			f.files[pid] = keep
+		}
+	}
 	gone := func(b *BP) bool { return b.Exit != nil && b.Exit.T < now-keepS }
 	for _, table := range []map[int][]*BP{f.byPid, f.kids} {
 		for k, v := range table {

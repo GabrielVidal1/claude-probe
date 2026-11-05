@@ -18,9 +18,13 @@ import (
 
 const Marker = "# claude-probe"
 
-// The events the hook listens to; a matcher limits a tool event to Bash.
+// ToolMatcher: the tools the hook measures — Bash calls, and the file tools
+// (what they change on disk, from a stat before and after).
+const ToolMatcher = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+
+// The events the hook listens to; a matcher limits a tool event to those tools.
 var Events = []struct{ Name, Matcher string }{
-	{"PreToolUse", "Bash"}, {"PostToolUse", "Bash"}, {"UserPromptSubmit", ""},
+	{"PreToolUse", ToolMatcher}, {"PostToolUse", ToolMatcher}, {"UserPromptSubmit", ""},
 	{"Stop", ""}, {"SubagentStart", ""}, {"SubagentStop", ""},
 }
 

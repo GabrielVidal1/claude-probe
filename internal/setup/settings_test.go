@@ -37,7 +37,7 @@ func TestHooksAddedOnceKeptInOrderUpdatedAndRemoved(t *testing.T) {
 	}
 	if len(doc.Hooks) != 6 || len(doc.Hooks["PreToolUse"]) != 2 ||
 		doc.Hooks["PreToolUse"][0].Hooks[0].Command != "rtk hook claude" ||
-		doc.Hooks["Stop"][0].Matcher != "" || doc.Hooks["PostToolUse"][0].Matcher != "Bash" {
+		doc.Hooks["Stop"][0].Matcher != "" || doc.Hooks["PostToolUse"][0].Matcher != ToolMatcher {
 		t.Fatal(doc.Hooks)
 	}
 	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {

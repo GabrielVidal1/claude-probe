@@ -92,8 +92,19 @@ $ claude-probe storage
 - **Who**: a scratch dir and a transcript carry their session's id; a worktree
   is attributed to the call whose process ran `git worktree add` (the kernel
   layer sees its argv), and to every session whose cwd or command named it.
-- **Per call**: what a call added to its session's scratchpad or worktrees is
-  recorded against it (`grow` records — `+1.9 GB`).
+- **Every write, exact (Linux, kernel mode)**: the eBPF program also sees
+  each regular file a call's processes open for writing — its allocated size
+  when opened and when its last reference goes (a mapping's writes included,
+  kernel ≥ 6.8) — and every last link they unlink or rename over. A call's
+  record then carries `files`: bytes written, freed and net, files created
+  and deleted, the biggest files and directories (an install is one line:
+  `…/node_modules +312 MB in 41 000 files`). Write / Edit / NotebookEdit
+  are measured by the hook (a stat before and after). `report` shows it in
+  its DISK column. Not counted: directories' own blocks, what another daemon
+  writes for the call (Docker's layers), and on macOS (no kernel layer for
+  files) only the scratchpad / worktree remeasures below.
+- **Per call, everywhere**: what a call added to its session's scratchpad or
+  worktrees is also recorded against it (`grow` records — `+1.9 GB`).
 - `claude-probe storage rm PATH` removes a scratch dir or a worktree — refused
   when it would lose work (uncommitted changes, commits the main branch
   lacks) or a live session uses it, unless `--force`; a merged branch goes

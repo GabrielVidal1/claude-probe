@@ -18,8 +18,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/GabrielVidal1/claude-probe/internal/paths"
 	"github.com/GabrielVidal1/claude-probe/internal/probe"
@@ -36,7 +39,8 @@ func Event(in map[string]any) *probe.Event {
 	if e == "" {
 		return nil
 	}
-	if (e == "pre" || e == "post") && str(in["tool_name"]) != "Bash" {
+	tool := str(in["tool_name"])
+	if (e == "pre" || e == "post") && tool != "Bash" && !probe.FileTools[tool] {
 		return nil
 	}
 	ev := &probe.Event{E: e, T: float64(time.Now().UnixNano()) / 1e9, Sid: str(in["session_id"]),
@@ -44,6 +48,24 @@ func Event(in map[string]any) *probe.Event {
 		AgentType: str(in["agent_type"]), Cwd: str(in["cwd"]), Effort: str(in["effort"]),
 		ConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), TmpDir: os.Getenv("CLAUDE_CODE_TMPDIR")}
 	inp, _ := in["tool_input"].(map[string]any)
+	if (e == "pre" || e == "post") && probe.FileTools[tool] {
+		ev.Tid, ev.Tool = str(in["tool_use_id"]), tool
+		ev.FilePath = str(inp["file_path"])
+		if ev.FilePath == "" {
+			ev.FilePath = str(inp["notebook_path"])
+		}
+		if ev.FilePath != "" && !filepath.IsAbs(ev.FilePath) && ev.Cwd != "" {
+			ev.FilePath = filepath.Join(ev.Cwd, ev.FilePath)
+		}
+		ev.File = statFile(ev.FilePath) // before the tool writes (pre), after (post)
+		if e == "post" {
+			if d, ok := in["duration_ms"].(float64); ok {
+				v := int64(d)
+				ev.DurationMs = &v
+			}
+		}
+		return ev
+	}
 	if e == "pre" || e == "post" {
 		ev.Tid, ev.Tool, ev.Command = str(in["tool_use_id"]), str(in["tool_name"]), str(inp["command"])
 		ev.Bg, _ = inp["run_in_background"].(bool)
@@ -68,6 +90,18 @@ func Event(in map[string]any) *probe.Event {
 		}
 	}
 	return ev
+}
+
+// statFile is a file's size now, for a file tool's before / after.
+func statFile(p string) *probe.FStat {
+	if p == "" {
+		return nil
+	}
+	var st unix.Stat_t
+	if unix.Stat(p, &st) != nil {
+		return &probe.FStat{}
+	}
+	return &probe.FStat{Exists: true, Bytes: int64(st.Blocks) * 512, Size: st.Size}
 }
 
 func str(v any) string {
