@@ -99,7 +99,12 @@ $ claude-probe storage
   lacks) or a live session uses it, unless `--force`; a merged branch goes
   with its worktree. `claude-probe storage clean` sweeps the scratch dirs of
   sessions quiet for 3 days and the merged, clean worktrees idle as long (a
-  dry run without `--yes`). `storage config --auto-clean 3` lets the daemon
+  dry run without `--yes`).
+- **The agent is told**: when the filesystem under a session's scratchpad or
+  cwd is over 90 % full, its next prompt carries one line saying so (and how
+  much its own scratchpad holds) — the only time the hook prints anything.
+  `storage config --nudge-at 95%` moves the threshold, `off` turns it off.
+- `storage config --auto-clean 3` lets the daemon
   clean scratch dirs itself; `--worktree-root DIR` names a directory whose
   children are worktrees (`~/worktrees`), `--root DIR --label L` any other
   directory to measure.

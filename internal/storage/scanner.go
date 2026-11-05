@@ -103,15 +103,15 @@ var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 
 const (
 	tickEvery     = time.Minute
-	idleRescan    = 6 * 3600.0  // an item nobody touched: walked again after this
-	rootRescan    = 3600.0      // an extra root
-	gitRefresh    = 1800.0      // a worktree's git state (main may have moved)
-	heartbeat     = 6 * 3600.0  // re-emit an unchanged item after this
-	diskEvery     = 600.0       // re-emit an unchanged filesystem after this
-	growMin       = 1 << 20     // a call's change worth a record
-	heavyWrite    = 32 << 20    // a call that wrote this much: walk its worktrees too
-	cheapFiles    = 50_000      // a scratchpad this small is walked after every call
-	cheapWorktree = 400_000     // a worktree this small is walked after a heavy call
+	idleRescan    = 6 * 3600.0 // an item nobody touched: walked again after this
+	rootRescan    = 3600.0     // an extra root
+	gitRefresh    = 1800.0     // a worktree's git state (main may have moved)
+	heartbeat     = 6 * 3600.0 // re-emit an unchanged item after this
+	diskEvery     = 600.0      // re-emit an unchanged filesystem after this
+	growMin       = 1 << 20    // a call's change worth a record
+	heavyWrite    = 32 << 20   // a call that wrote this much: walk its worktrees too
+	cheapFiles    = 50_000     // a scratchpad this small is walked after every call
+	cheapWorktree = 400_000    // a worktree this small is walked after a heavy call
 	sessionMemory = 30 * 86400.0
 )
 
@@ -134,9 +134,9 @@ type Scanner struct {
 	// ScratchRoots replaces /tmp/claude-<uid>, ConfigDirs ~/.claude (tests).
 	ScratchRoots []string
 	ConfigDirs   []string
-	reqs     chan req
-	stop     chan struct{}
-	done     chan struct{}
+	reqs         chan req
+	stop         chan struct{}
+	done         chan struct{}
 }
 
 type req struct {
@@ -156,8 +156,8 @@ type rmReq struct {
 
 type callDone struct {
 	sid, tid, agent, cwd, command string
-	wrote                int64
-	added, removed       []string
+	wrote                         int64
+	added, removed                []string
 }
 
 // New makes a scanner over st; Start runs it.

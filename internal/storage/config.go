@@ -31,6 +31,22 @@ func (c CleanPolicy) On() bool { return c.ScratchAfterDays > 0 }
 type Config struct {
 	Roots []Root      `json:"roots,omitempty"`
 	Clean CleanPolicy `json:"clean,omitempty"`
+	// NudgeAt: when the filesystem under a session's scratchpad or cwd is
+	// fuller than this (0.9 = 90 %), its next prompt carries one line saying
+	// so — the agent then knows to clean up and not to write big files there.
+	// 0 = the default (0.9); negative = off.
+	NudgeAt float64 `json:"nudgeAt,omitempty"`
+}
+
+// Nudge is the fill level the hook warns from (0: never).
+func (c Config) Nudge() float64 {
+	switch {
+	case c.NudgeAt < 0:
+		return 0
+	case c.NudgeAt == 0:
+		return 0.9
+	}
+	return c.NudgeAt
 }
 
 func ConfigPath() string { return filepath.Join(paths.StateDir(), "storage.json") }

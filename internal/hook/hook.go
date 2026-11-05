@@ -1,9 +1,12 @@
 // Package hook is `claude-probe hook`: the Claude Code hook on PreToolUse /
 // PostToolUse (Bash), UserPromptSubmit, Stop, SubagentStart and
 // SubagentStop. It hands the event to the daemon and exits — fire and
-// forget, prints nothing (a UserPromptSubmit hook's stdout would land in the
-// model's context), never fails the call. When no daemon answers it starts
-// one and retries for up to a second.
+// forget, never fails the call. When no daemon answers it starts one and
+// retries for up to a second.
+//
+// It prints nothing — a UserPromptSubmit hook's stdout lands in the model's
+// context — except one line on a prompt when a filesystem the session writes
+// to is nearly full (storage.NudgeLine; `storage config --nudge-at`).
 package hook
 
 import (
@@ -20,6 +23,7 @@ import (
 
 	"github.com/GabrielVidal1/claude-probe/internal/paths"
 	"github.com/GabrielVidal1/claude-probe/internal/probe"
+	"github.com/GabrielVidal1/claude-probe/internal/storage"
 )
 
 var events = map[string]string{"PreToolUse": "pre", "PostToolUse": "post",
@@ -101,8 +105,9 @@ func send(c *http.Client, body []byte) error {
 	return nil
 }
 
-// Run is the hook's whole life. self is this binary's path.
-func Run(stdin io.Reader, self string) {
+// Run is the hook's whole life. self is this binary's path; out is where a
+// prompt's nudge goes (the hook's stdout).
+func Run(stdin io.Reader, out io.Writer, self string) {
 	var in map[string]any
 	if json.NewDecoder(stdin).Decode(&in) != nil {
 		return
@@ -110,6 +115,11 @@ func Run(stdin io.Reader, self string) {
 	ev := Event(in)
 	if ev == nil {
 		return
+	}
+	if ev.E == "prompt" && out != nil {
+		if line := storage.NudgeLine(ev.Sid, ev.Cwd, ev.TmpDir); line != "" {
+			io.WriteString(out, line+"\n")
+		}
 	}
 	body, _ := json.Marshal(ev)
 	c := client()

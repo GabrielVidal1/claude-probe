@@ -13,17 +13,17 @@ import (
 // Git is what a worktree holds that its files don't say: where it comes
 // from, and whether removing it would lose anything.
 type Git struct {
-	Repo    string `json:"repo"`             // the main working tree
-	Branch  string `json:"branch,omitempty"` // "" on a detached HEAD
-	Head    string `json:"head,omitempty"`
-	Base    string `json:"base,omitempty"`   // what "merged" compares with
-	Merged  *bool  `json:"merged,omitempty"` // every commit of it is on Base
-	Ahead   *int   `json:"ahead,omitempty"`  // commits Base doesn't have
-	Dirty   *int   `json:"dirty,omitempty"`  // modified + untracked paths
-	Locked  bool   `json:"locked,omitempty"`
-	Native  bool   `json:"native,omitempty"` // Claude Code's own (<repo>/.claude/worktrees/…)
-	IdleFor int64  `json:"idleS,omitempty"`  // since its last commit/checkout
-	At      float64 `json:"at"`              // when this was read
+	Repo    string  `json:"repo"`             // the main working tree
+	Branch  string  `json:"branch,omitempty"` // "" on a detached HEAD
+	Head    string  `json:"head,omitempty"`
+	Base    string  `json:"base,omitempty"`   // what "merged" compares with
+	Merged  *bool   `json:"merged,omitempty"` // every commit of it is on Base
+	Ahead   *int    `json:"ahead,omitempty"`  // commits Base doesn't have
+	Dirty   *int    `json:"dirty,omitempty"`  // modified + untracked paths
+	Locked  bool    `json:"locked,omitempty"`
+	Native  bool    `json:"native,omitempty"` // Claude Code's own (<repo>/.claude/worktrees/…)
+	IdleFor int64   `json:"idleS,omitempty"`  // since its last commit/checkout
+	At      float64 `json:"at"`               // when this was read
 }
 
 // commonDir finds the git dir shared by every worktree of the repo that

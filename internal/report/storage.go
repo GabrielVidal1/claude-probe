@@ -16,9 +16,9 @@ import (
 
 // StorageView is what `claude-probe storage` shows.
 type StorageView struct {
-	Disks []storage.Disk         `json:"disks"`
+	Disks []storage.Disk               `json:"disks"`
 	Kinds map[string]storage.KindTotal `json:"kinds"`
-	Items []storage.Item         `json:"items"`
+	Items []storage.Item               `json:"items"`
 }
 
 // LoadStorage reads the newest version of every live item and filesystem.

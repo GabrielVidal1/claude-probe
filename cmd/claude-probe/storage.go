@@ -224,6 +224,7 @@ func runStorageConfig(args []string) error {
 	wroot := fs.String("worktree-root", "", "a directory whose children are git worktrees")
 	rm := fs.String("rm-root", "", "stop tracking this directory")
 	auto := fs.String("auto-clean", "", "the daemon removes scratch dirs of sessions quiet this many days (0: off)")
+	nudge := fs.String("nudge-at", "", "tell the agent when its disk is this full (e.g. 90%, 0.9; off)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	_ = fs.Parse(args)
 	c := storage.LoadConfig()
@@ -268,6 +269,19 @@ func runStorageConfig(args []string) error {
 		c.Clean.ScratchAfterDays = d
 		changed = true
 	}
+	if *nudge != "" {
+		v := strings.TrimSuffix(*nudge, "%")
+		var f float64
+		if *nudge == "off" || *nudge == "0" {
+			f = -1
+		} else if _, err := fmt.Sscanf(v, "%g", &f); err != nil || f <= 0 {
+			return fmt.Errorf("--nudge-at: a fill level (90%%, 0.9) or off")
+		} else if f > 1 {
+			f /= 100
+		}
+		c.NudgeAt = f
+		changed = true
+	}
 	if changed {
 		if err := storage.SaveConfig(c); err != nil {
 			return err
@@ -288,6 +302,11 @@ func runStorageConfig(args []string) error {
 		fmt.Printf("  auto-clean: scratch dirs of sessions quiet %g days\n", c.Clean.ScratchAfterDays)
 	} else {
 		fmt.Println("  auto-clean: off")
+	}
+	if n := c.Nudge(); n > 0 {
+		fmt.Printf("  nudge: a line in the agent's context when its disk is %.0f%% full\n", n*100)
+	} else {
+		fmt.Println("  nudge: off")
 	}
 	return nil
 }

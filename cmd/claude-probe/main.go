@@ -72,7 +72,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "hook":
-		hook.Run(os.Stdin, self())
+		hook.Run(os.Stdin, os.Stdout, self())
 	case "daemon":
 		err = runDaemon(args)
 	case "install":
