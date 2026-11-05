@@ -8,6 +8,9 @@
 //	POST /event               one hook event (JSON)
 //	GET  /callmeta?after=N    records after id N — the ai-agent hub's pull
 //	GET  /health              version, mode (kernel | sampled), calls running
+//	POST /storage/scan        measure every tracked item now (waits for it)
+//	POST /storage/rm          remove a scratch dir or a worktree, safely
+//	                          ({"path", "force", "dry"} → the removal)
 package daemon
 
 import (
@@ -27,13 +30,16 @@ import (
 	"github.com/GabrielVidal1/claude-probe/internal/caps"
 	"github.com/GabrielVidal1/claude-probe/internal/paths"
 	"github.com/GabrielVidal1/claude-probe/internal/probe"
+	"github.com/GabrielVidal1/claude-probe/internal/storage"
 	"github.com/GabrielVidal1/claude-probe/internal/store"
 )
 
 type Options struct {
-	Idle     time.Duration // 0 = never exit
-	NoKernel bool
-	Version  string
+	Idle      time.Duration // 0 = never exit
+	NoKernel  bool
+	NoStorage bool          // don't track what sessions keep on disk
+	ScanDelay time.Duration // before the first storage pass
+	Version   string
 }
 
 var ErrRunning = errors.New("another daemon is running")
@@ -71,6 +77,16 @@ func Run(opts Options) error {
 	}
 	caps.Drop() // the kernel program is loaded: nothing else needs privileges
 	pr := probe.New(st, feed)
+	var sc *storage.Scanner
+	if !opts.NoStorage {
+		sc = storage.New(st)
+		pr.OnEvent = func(ev probe.Event) {
+			sc.Touch(ev.Sid, ev.Cwd, ev.ConfigDir, ev.TmpDir, ev.E == "stop" || ev.E == "subStop")
+		}
+		pr.OnDone = sc.CallDone
+		sc.Start(opts.ScanDelay)
+		defer sc.Stop()
+	}
 	started := time.Now()
 
 	sock := paths.Socket()
@@ -123,7 +139,36 @@ func Run(opts Options) error {
 	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"version": opts.Version, "mode": mode, "note": note,
-			"running": pr.Running(), "since": started.Unix(), "pid": os.Getpid()})
+			"running": pr.Running(), "since": started.Unix(), "pid": os.Getpid(), "storage": sc != nil})
+	})
+	mux.HandleFunc("POST /storage/scan", func(w http.ResponseWriter, r *http.Request) {
+		if sc == nil {
+			http.Error(w, "storage tracking is off", 404)
+			return
+		}
+		writeJSON(w, map[string]any{"done": sc.Scan(10 * time.Minute)})
+	})
+	mux.HandleFunc("POST /storage/rm", func(w http.ResponseWriter, r *http.Request) {
+		if sc == nil {
+			http.Error(w, "storage tracking is off", 404)
+			return
+		}
+		var q struct {
+			Path  string `json:"path"`
+			Force bool   `json:"force"`
+			Dry   bool   `json:"dry"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&q); err != nil || q.Path == "" {
+			http.Error(w, "want {path, force, dry}", 400)
+			return
+		}
+		out, err := sc.RemoveNow(q.Path, q.Force, q.Dry, 5*time.Minute)
+		res := map[string]any{"removal": out, "ok": err == nil}
+		if err != nil {
+			res["error"] = err.Error()
+			res["unsafe"] = errors.Is(err, storage.ErrUnsafe)
+		}
+		writeJSON(w, res)
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()

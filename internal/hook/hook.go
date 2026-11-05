@@ -38,7 +38,7 @@ func Event(in map[string]any) *probe.Event {
 	ev := &probe.Event{E: e, T: float64(time.Now().UnixNano()) / 1e9, Sid: str(in["session_id"]),
 		PromptID: str(in["prompt_id"]), AgentID: str(in["agent_id"]),
 		AgentType: str(in["agent_type"]), Cwd: str(in["cwd"]), Effort: str(in["effort"]),
-		ConfigDir: os.Getenv("CLAUDE_CONFIG_DIR")}
+		ConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), TmpDir: os.Getenv("CLAUDE_CODE_TMPDIR")}
 	inp, _ := in["tool_input"].(map[string]any)
 	if e == "pre" || e == "post" {
 		ev.Tid, ev.Tool, ev.Command = str(in["tool_use_id"]), str(in["tool_name"]), str(inp["command"])

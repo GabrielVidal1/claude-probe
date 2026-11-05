@@ -43,6 +43,15 @@ const usage = `claude-probe — what each Bash call of Claude Code really cost.
   claude-probe top [--since 7d] [--by part|program|call] [--limit 20] [--json]
   claude-probe export [--after ID] [--limit N]       the raw records (JSON)
 
+  claude-probe storage [--session ID] [--kind K] [--limit 20] [--json] [--scan]
+                                    what sessions keep on disk: scratchpads, worktrees, transcripts
+  claude-probe storage rm PATH… [--force] [--dry-run]       remove a scratch dir or a worktree, safely
+  claude-probe storage clean [--scratch 3] [--worktrees 3] [--yes]
+                                    the scratch dirs and merged worktrees quiet for N days (dry run
+                                    without --yes)
+  claude-probe storage config [--root DIR [--label L]] [--worktree-root DIR] [--rm-root DIR]
+                              [--auto-clean DAYS]          extra dirs to track; the daemon's own cleaning
+
   claude-probe hook                 (Claude Code runs it)
   claude-probe statusline [--wrap CMD]   (the status line segment)
   claude-probe daemon [--idle 30m] [--no-kernel]   (started on demand by the hook)
@@ -78,6 +87,8 @@ func main() {
 		err = runReport(args)
 	case "top":
 		err = runTop(args)
+	case "storage":
+		err = runStorage(args)
 	case "statusline":
 		fs := flag.NewFlagSet("statusline", flag.ExitOnError)
 		wrap := fs.String("wrap", "", "the user's own status line command, run first")
@@ -136,8 +147,11 @@ func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	idle := fs.Duration("idle", 30*time.Minute, "exit after this long with nothing to follow (0: never)")
 	noKernel := fs.Bool("no-kernel", false, "sample /proc even when the kernel layer could load")
+	noStorage := fs.Bool("no-storage", false, "don't track what sessions keep on disk")
+	scanDelay := fs.Duration("scan-delay", time.Minute, "before the first storage pass")
 	_ = fs.Parse(args)
-	err := daemon.Run(daemon.Options{Idle: *idle, NoKernel: *noKernel, Version: version})
+	err := daemon.Run(daemon.Options{Idle: *idle, NoKernel: *noKernel, NoStorage: *noStorage,
+		ScanDelay: *scanDelay, Version: version})
 	if errors.Is(err, daemon.ErrRunning) {
 		return nil
 	}
@@ -207,13 +221,17 @@ func runSetupKernel(args []string) error {
 	return nil
 }
 
-func health() (map[string]any, error) {
+func sockClient(timeout time.Duration) *http.Client {
 	sock := paths.Socket()
-	c := &http.Client{Timeout: time.Second, Transport: &http.Transport{
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", sock)
 		}}}
+}
+
+func health() (map[string]any, error) {
+	c := sockClient(time.Second)
 	resp, err := c.Get("http://probe/health")
 	if err != nil {
 		return nil, err

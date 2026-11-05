@@ -188,3 +188,53 @@ func (s *Store) Prune() error {
 	  (SELECT MAX(id) FROM records GROUP BY kind, key)`, t-3600)
 	return err
 }
+
+// Cwd is where a session's calls and turns ran from.
+type Cwd struct {
+	Session string
+	Cwd     string
+	At      float64 // the last time
+}
+
+// Cwds lists the (session, cwd) pairs the hooks reported since `since`.
+func (s *Store) Cwds(since float64) ([]Cwd, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT session, json_extract(data, '$.cwd') AS cwd, MAX(at) FROM records
+	  WHERE kind IN ('call', 'mark') AND at >= ? AND cwd IS NOT NULL AND cwd != ''
+	  GROUP BY session, cwd`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Cwd
+	for rows.Next() {
+		var c Cwd
+		if err := rows.Scan(&c.Session, &c.Cwd, &c.At); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// Strings lists the distinct non-empty values of one JSON field of a kind's
+// records (e.g. every configDir the marks named).
+func (s *Store) Strings(kind, field string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT DISTINCT json_extract(data, ?) AS v FROM records
+	  WHERE kind = ? AND v IS NOT NULL AND v != ''`, "$."+field, kind)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if rows.Scan(&v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}

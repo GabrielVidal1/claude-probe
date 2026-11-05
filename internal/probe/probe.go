@@ -59,6 +59,7 @@ type Event struct {
 	Cwd         string  `json:"cwd,omitempty"`
 	Effort      string  `json:"effort,omitempty"`
 	ConfigDir   string  `json:"configDir,omitempty"`
+	TmpDir      string  `json:"tmpDir,omitempty"` // $CLAUDE_CODE_TMPDIR, when the session sets one
 	Tid         string  `json:"tid,omitempty"`
 	Tool        string  `json:"tool,omitempty"`
 	Command     string  `json:"command,omitempty"`
@@ -483,6 +484,9 @@ type Probe struct {
 	lastPrune float64
 	LastEvent float64
 	claimed   map[string]float64 // shells already given to a call (pid@start → when)
+
+	OnEvent func(Event)          // every hook event (the storage scanner's activity feed)
+	OnDone  func(map[string]any) // a call's final record
 }
 
 func New(st *store.Store, feed *Feed) *Probe {
@@ -497,6 +501,9 @@ func (pr *Probe) Running() int { pr.mu.Lock(); defer pr.mu.Unlock(); return len(
 
 // Handle takes one event from the hook.
 func (pr *Probe) Handle(ev Event) {
+	if pr.OnEvent != nil {
+		pr.OnEvent(ev)
+	}
 	now := nowF()
 	pr.mu.Lock()
 	pr.LastEvent = now
@@ -1021,14 +1028,19 @@ func reaped(c *Call, p *TP, prev float64) {
 	}
 }
 
-func (pr *Probe) emit(c *Call, now float64) {
+func (pr *Probe) emit(c *Call, now float64) map[string]any {
 	c.emittedAt = now
-	_ = pr.Store.Put("call", c.ev.Sid, c.ev.Tid, c.record())
+	rec := c.record()
+	_ = pr.Store.Put("call", c.ev.Sid, c.ev.Tid, rec)
+	return rec
 }
 
 func (pr *Probe) finish(c *Call, now float64) {
-	pr.emit(c, now)
+	rec := pr.emit(c, now)
 	pr.drop(c)
+	if pr.OnDone != nil {
+		pr.OnDone(rec)
+	}
 }
 
 func (pr *Probe) drop(c *Call) {
