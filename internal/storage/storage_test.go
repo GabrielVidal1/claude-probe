@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,6 +80,22 @@ func TestWorktreeOp(t *testing.T) {
 	}
 }
 
+func TestWorkDirs(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	got := workDirs("cd ~/worktrees/a && npm i; git -C /w/b status | tail; echo cd /w/c", "/r")
+	want := []string{home + "/worktrees/a", "/w/b"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	// a path inside a heredoc body, or only printed: not worked in
+	if d := workDirs("cat > f.ts <<'EOF'\ncd ~/worktrees/x && npm ci\nEOF\ngrep worktrees/y z", "/r"); len(d) != 0 {
+		t.Fatalf("heredoc/grep counted: %v", d)
+	}
+	if d := workDirs("cd sub", "/r"); len(d) != 1 || d[0] != "/r/sub" {
+		t.Fatalf("relative cd: %v", d)
+	}
+}
+
 func run(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(args[0], args[1:]...)
@@ -143,6 +160,7 @@ func TestScanAttributesAndRemoves(t *testing.T) {
 	// the call that made the worktree, as the probe hands it over
 	sc.afterCall(&callDone{sid: sid, tid: "toolu_1", cwd: repo, command: "git worktree add -b feat " + wt,
 		added: []string{wt}})
+	other := "77777777-2222-3333-4444-555555555555"
 	sc.pass(true)
 
 	items := latest(t, st, "storage")
@@ -163,6 +181,14 @@ func TestScanAttributesAndRemoves(t *testing.T) {
 	g, _ := w["git"].(map[string]any)
 	if g == nil || g["branch"] != "feat" || g["merged"] != true || g["dirty"].(float64) != 1 {
 		t.Fatalf("git: %v", g)
+	}
+	// a session that cd's into it worked in it; one that only prints the path didn't
+	sc.afterCall(&callDone{sid: other, tid: "toolu_o", cwd: "/", command: "cd " + wt + " && make"})
+	sc.afterCall(&callDone{sid: "88888888-2222-3333-4444-555555555555", tid: "toolu_e", cwd: "/", command: "echo " + wt})
+	sc.pass(true)
+	ss := fmt.Sprint(latest(t, st, "storage")[wt]["sessions"])
+	if !strings.Contains(ss, other) || strings.Contains(ss, "88888888") {
+		t.Fatalf("sessions: %s", ss)
 	}
 	tr := items[filepath.Join(cfg, "projects", "-repo", sid)]
 	if tr == nil || tr["kind"] != "transcript" {

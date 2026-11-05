@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GabrielVidal1/claude-probe/internal/shellsplit"
 	"github.com/GabrielVidal1/claude-probe/internal/store"
 )
 
@@ -325,7 +326,7 @@ func (s *Scanner) load() {
 				if it.CreatedBy != nil {
 					s.origins[it.Path] = *it.CreatedBy
 				}
-				if it.Kind == "worktree" {
+				if it.Kind == "worktree" && it.V >= 2 { // v1 counted any mention of the path
 					for _, sid := range it.Sessions { // who worked in it, cwd or not
 						if s.cwds[it.Path] == nil {
 							s.cwds[it.Path] = map[string]float64{}
@@ -657,7 +658,7 @@ func (s *Scanner) due(c candidate, now float64) bool {
 // measure walks one candidate into an item.
 func (s *Scanner) measure(c candidate, now float64, withGit bool) *Item {
 	t0 := time.Now()
-	it := &Item{V: 1, Kind: c.kind, Path: c.path, SessionID: c.sid, Project: c.project,
+	it := &Item{V: 2, Kind: c.kind, Path: c.path, SessionID: c.sid, Project: c.project,
 		ConfigDir: c.cfg, Label: c.label}
 	var t Tally
 	switch c.kind {
@@ -927,22 +928,64 @@ func (s *Scanner) remeasure(cands []candidate, now float64) []GrowItem {
 	return out
 }
 
-// mentioned records the worktrees a call's command names (`cd ~/worktrees/x
-// && …`, `git -C /…/x …`): Claude Code puts every call back in the
-// session's own directory, so a session working in a worktree rarely has it
-// as its cwd.
+// workDirs are the directories a command works in: the targets of its
+// `cd` / `pushd` parts and of `-C <dir>` (git, make…) — read with the shell
+// splitter, so a path that is only text (an echo, a heredoc body, a grep
+// pattern) doesn't count.
+func workDirs(command, cwd string) []string {
+	home, _ := os.UserHomeDir()
+	abs := func(w string) string {
+		w = strings.Trim(w, `'"`)
+		switch {
+		case w == "~":
+			return home
+		case strings.HasPrefix(w, "~/"):
+			return filepath.Join(home, w[2:])
+		case strings.HasPrefix(w, "$HOME/"):
+			return filepath.Join(home, w[6:])
+		case filepath.IsAbs(w):
+			return filepath.Clean(w)
+		case cwd != "":
+			return filepath.Join(cwd, w)
+		}
+		return ""
+	}
+	var out []string
+	for _, part := range shellsplit.Split(command) {
+		words := strings.Fields(part.Text)
+		for i, w := range words {
+			if i+1 >= len(words) {
+				break
+			}
+			if (i == 0 && (w == "cd" || w == "pushd")) || w == "-C" {
+				if d := abs(words[i+1]); d != "" {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// mentioned records the worktrees a call worked in by `cd` or `-C`: Claude
+// Code puts every call back in the session's own directory, so a session
+// working in a worktree rarely has it as its cwd.
 func (s *Scanner) mentioned(c *callDone, now float64) {
-	if c.command == "" {
+	dirs := workDirs(c.command, c.cwd)
+	if len(dirs) == 0 {
 		return
 	}
-	home, _ := os.UserHomeDir()
 	for p, it := range s.items {
 		if it.Kind != "worktree" {
 			continue
 		}
-		hit := strings.Contains(c.command, p)
-		if !hit && home != "" && strings.HasPrefix(p, home+"/") {
-			hit = strings.Contains(c.command, "~"+p[len(home):])
+		pre := strings.TrimSuffix(p, "/") + "/"
+		hit := false
+		for _, d := range dirs {
+			if d == p || strings.HasPrefix(d, pre) {
+				hit = true
+				break
+			}
 		}
 		if !hit {
 			continue
